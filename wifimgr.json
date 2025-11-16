@@ -23,5 +23,13 @@
     "WiFi Changed": 0,
     "New WiFi Network": 0,
     "Signal Changed": -1
-  }
+  },
+  "stickyNotifications": {
+    "WiFi Connected": true,
+    "WiFi Disconnected": true,
+    "WiFi Changed": false,
+    "New WiFi Network": false,
+    "Signal Changed": true
+  },
+  "defaultSticky": false
 }

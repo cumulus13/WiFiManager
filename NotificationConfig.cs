@@ -1,9 +1,3 @@
-// File: NotificationConfig.cs
-// Author: Hadi Cahyadi <cumulus13@gmail.com>
-// Date: 2025-11-16
-// Description: 
-// License: MIT
-
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -41,6 +35,19 @@ namespace WiFiManager
             { "New WiFi Network", 0 },
             { "Signal Changed", -1 }
         };
+
+        [JsonPropertyName("stickyNotifications")]
+        public Dictionary<string, bool> StickyNotifications { get; set; } = new()
+        {
+            { "WiFi Connected", false },
+            { "WiFi Disconnected", true },   // Sticky for important notifications
+            { "WiFi Changed", false },
+            { "New WiFi Network", false },
+            { "Signal Changed", false }
+        };
+
+        [JsonPropertyName("defaultSticky")]
+        public bool DefaultSticky { get; set; } = false;
 
         // Track loaded config path
         [JsonIgnore]
@@ -90,11 +97,8 @@ namespace WiFiManager
             {
                 Console.WriteLine($"[⚠️] Config file not found, using default config.");
                 var defaultConfig = new NotificationConfig();
-                
-                // Set default save location
                 var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
                 defaultConfig.LoadedFrom = Path.Combine(userProfile, ".wifimgr", "wifimgr.json");
-                
                 return defaultConfig;
             }
 
@@ -110,9 +114,7 @@ namespace WiFiManager
 
                 if (config != null)
                 {
-                    // Remember where it was loaded from
                     config.LoadedFrom = configPath;
-                    
                     Console.WriteLine($"[✅] Config successfully loaded from: {configPath}");
                     Console.WriteLine($"    - Windows Toast: {(config.EnableWindowsToast ? "ON" : "OFF")}");
                     Console.WriteLine($"    - Growl: {(config.EnableGrowl ? "ON" : "OFF")}");
@@ -138,8 +140,6 @@ namespace WiFiManager
 
         public void Save(string? path = null)
         {
-            // Jika path tidak diberikan, gunakan lokasi yang terakhir di-load
-            // Atau default ke user profile folder
             if (string.IsNullOrWhiteSpace(path))
             {
                 if (!string.IsNullOrWhiteSpace(LoadedFrom))
@@ -150,12 +150,12 @@ namespace WiFiManager
                 {
                     var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
                     var wifimgrDir = Path.Combine(userProfile, ".wifimgr");
-                    
+
                     if (!Directory.Exists(wifimgrDir))
                     {
                         Directory.CreateDirectory(wifimgrDir);
                     }
-                    
+
                     path = Path.Combine(wifimgrDir, "wifimgr.json");
                 }
             }
@@ -175,22 +175,13 @@ namespace WiFiManager
                 });
 
                 File.WriteAllText(path, json);
-                
-                // Update LoadedFrom after successful save
                 LoadedFrom = path;
-                
                 Console.WriteLine($"[✅] Config saved to: {path}");
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"[❌] Failed to save config: {ex.Message}");
             }
-        }
-
-        // Helper method untuk save ke lokasi baru
-        public void SaveAs(string path)
-        {
-            Save(path);
         }
     }
 

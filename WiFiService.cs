@@ -38,8 +38,37 @@ namespace WiFiManager
     public class WiFiService
     {
         private IntPtr _clientHandle = IntPtr.Zero;
+        private bool _disposed = false;
         private Guid _interfaceGuid;
         private List<WiFiInterface> _interfaces = new();
+
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!_disposed)
+            {
+                if (_clientHandle != IntPtr.Zero)
+                {
+                    try
+                    {
+                        WlanCloseHandle(_clientHandle, IntPtr.Zero);
+                    }
+                    catch { }
+                    _clientHandle = IntPtr.Zero;
+                }
+                _disposed = true;
+            }
+        }
+
+        // ~WiFiService()
+        // {
+        //     Dispose(false);
+        // }
 
         public WiFiService()
         {
@@ -570,6 +599,8 @@ namespace WiFiManager
             {
                 // Ignore cleanup errors
             }
+            
+            Dispose(false);
         }
 
         // P/Invoke declarations

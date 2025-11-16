@@ -17,6 +17,7 @@ namespace WiFiManager
         private readonly List<GrowlConnection> _growlConnections = new();
         private string? _appIconPath;
         private string? _appIconData;
+        private readonly object _sendLock = new object(); // <-- ADD THIS LINE!
 
         public NotificationService(string? configPath = null)
         {
@@ -64,8 +65,18 @@ namespace WiFiManager
                 }
 
                 // Convert to base64 for Growl
-                if (!string.IsNullOrEmpty(_appIconPath))
+                if (!string.IsNullOrEmpty(_appIconPath) && File.Exists(_appIconPath))
                 {
+                    var fileInfo = new FileInfo(_appIconPath);
+                    
+                    // Validate file size (max 500KB)
+                    if (fileInfo.Length > 500 * 1024)
+                    {
+                        ColorConsole.WriteWarning($"[⚠️] Icon too large ({fileInfo.Length / 1024}KB), max 500KB. Skipping icon.");
+                        _appIconPath = null;
+                        return;
+                    }
+                    
                     var iconBytes = File.ReadAllBytes(_appIconPath);
                     _appIconData = Convert.ToBase64String(iconBytes);
                     Debug.WriteLine($"Icon loaded: {_appIconPath}");
@@ -106,21 +117,25 @@ namespace WiFiManager
                 {
                     RegisterWithGrowl(connection).Wait();
                     _growlConnections.Add(connection);
-                    ColorConsole.WriteSuccess($"✅ Connected to {connection.Host}\n");
+                    ColorConsole.WriteSuccess($"✅ Connected to {connection.Host}");
+                    Console.WriteLine();
                 }
                 else
                 {
-                    ColorConsole.WriteWarning($"⚠️  Cannot connect to {connection.Host}\n");
+                    ColorConsole.WriteWarning($"⚠️  Cannot connect to {connection.Host}");
+                    Console.WriteLine();
                 }
             }
 
             if (_growlConnections.Count == 0)
             {
-                ColorConsole.WriteWarning("⚠️  Growl notification: DISABLED (no hosts available)\n");
+                ColorConsole.WriteWarning("⚠️  Growl notification: DISABLED (no hosts available)");
+                Console.WriteLine();
             }
             else
             {
-                ColorConsole.WriteSuccess($"📢 Growl notification: ENABLED ({_growlConnections.Count} host(s))\n");
+                ColorConsole.WriteSuccess($"📢 Growl notification: ENABLED ({_growlConnections.Count} host(s))");
+                Console.WriteLine();
             }
         }
 
@@ -174,41 +189,45 @@ namespace WiFiManager
 
                 if (!response.Contains("GNTP/1.0 -OK"))
                 {
-                    Debug.WriteLine($"Growl registration response: {response}\n");
+                    Debug.WriteLine($"Growl registration response: {response}");
                     connection.IsAvailable = false;
                 }
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"Growl registration error on {connection.Host}: {ex.Message}\n");
+                Debug.WriteLine($"Growl registration error on {connection.Host}: {ex.Message}");
                 connection.IsAvailable = false;
             }
         }
 
         public void ShowNotification(string title, string message, string? iconPath = null)
         {
-            try
+            // Use lock to prevent race conditions
+            lock (_sendLock)
             {
-                var icon = iconPath ?? _appIconPath;
-
-                // Windows Toast
-                if (_config.EnableWindowsToast)
+                try
                 {
-                    ShowWindowsNotification(title, message, icon);
-                }
+                    var icon = iconPath ?? _appIconPath;
 
-                // Growl
-                if (_config.EnableGrowl && _growlConnections.Count > 0)
-                {
-                    foreach (var connection in _growlConnections.Where(c => c.IsAvailable))
+                    // Windows Toast
+                    if (_config.EnableWindowsToast)
                     {
-                        _ = SendGrowlNotification(connection, title, message, icon);
+                        ShowWindowsNotification(title, message, icon);
+                    }
+
+                    // Growl
+                    if (_config.EnableGrowl && _growlConnections.Count > 0)
+                    {
+                        foreach (var connection in _growlConnections.Where(c => c.IsAvailable).ToList())
+                        {
+                            _ = SendGrowlNotification(connection, title, message, icon);
+                        }
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"Notification error: {ex.Message}");
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"Notification error: {ex.Message}");
+                }
             }
         }
 
@@ -289,6 +308,11 @@ try {{
 
                 var notificationType = title;
                 var priority = _config.NotificationPriorities.TryGetValue(title, out var p) ? p : 0;
+                
+                // Get sticky setting from config
+                var isSticky = _config.StickyNotifications.TryGetValue(title, out var sticky) 
+                    ? sticky 
+                    : _config.DefaultSticky;
 
                 var notification = new StringBuilder();
                 notification.AppendLine("GNTP/1.0 NOTIFY NONE");
@@ -297,17 +321,40 @@ try {{
                 notification.AppendLine($"Notification-Title: {title}");
                 notification.AppendLine($"Notification-Text: {message}");
                 notification.AppendLine($"Notification-Priority: {priority}");
-                notification.AppendLine("Notification-Sticky: False");
+                notification.AppendLine($"Notification-Sticky: {(isSticky ? "True" : "False")}");
 
-                if (!string.IsNullOrEmpty(iconPath) && File.Exists(iconPath))
+                // Add icon
+                bool iconAdded = false;
+
+                // Untuk localhost, gunakan file path (lebih efisien)
+                if ((connection.Host.Host == "127.0.0.1" || connection.Host.Host == "localhost") 
+                    && !string.IsNullOrEmpty(_appIconPath) 
+                    && File.Exists(_appIconPath))
                 {
-                    var iconBytes = File.ReadAllBytes(iconPath);
-                    var iconBase64 = Convert.ToBase64String(iconBytes);
-                    notification.AppendLine($"Notification-Icon: data:image/png;base64,{iconBase64}");
+                    var filePath = _appIconPath.Replace("\\", "/");
+                    notification.AppendLine($"Notification-Icon: file:///{filePath}");
+                    iconAdded = true;
                 }
-                else if (!string.IsNullOrEmpty(_appIconData))
+
+                // Untuk remote host atau jika file path gagal, gunakan base64
+                if (!iconAdded)
                 {
-                    notification.AppendLine($"Notification-Icon: data:image/png;base64,{_appIconData}");
+                    string? iconToUse = iconPath ?? _appIconPath;
+
+                    if (!string.IsNullOrEmpty(iconToUse) && File.Exists(iconToUse))
+                    {
+                        try
+                        {
+                            var iconBytes = File.ReadAllBytes(iconToUse);
+                            var iconBase64 = Convert.ToBase64String(iconBytes);
+                            var mediaType = GetMediaType(iconToUse);
+                            notification.AppendLine($"Notification-Icon: data:{mediaType};base64,{iconBase64}");
+                        }
+                        catch (Exception iconEx)
+                        {
+                            Debug.WriteLine($"Failed to add icon: {iconEx.Message}");
+                        }
+                    }
                 }
 
                 notification.AppendLine();
@@ -315,7 +362,7 @@ try {{
                 var data = Encoding.UTF8.GetBytes(notification.ToString());
                 await stream.WriteAsync(data, 0, data.Length);
 
-                var buffer = new byte[1024];
+                var buffer = new byte[4096];
                 var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
                 var response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
 
@@ -330,6 +377,24 @@ try {{
                 Debug.WriteLine($"Growl send error to {connection.Host}: {ex.Message}");
                 connection.IsAvailable = false;
             }
+        }
+
+        private string GetMediaType(string filePath)
+        {
+            if (string.IsNullOrEmpty(filePath))
+                return "image/png";
+
+            var extension = Path.GetExtension(filePath).ToLowerInvariant();
+
+            return extension switch
+            {
+                ".png" => "image/png",
+                ".jpg" or ".jpeg" => "image/jpeg",
+                ".gif" => "image/gif",
+                ".bmp" => "image/bmp",
+                ".ico" => "image/x-icon",
+                _ => "image/png"
+            };
         }
 
         private string EscapeForPowerShell(string text)
@@ -347,37 +412,40 @@ try {{
 
         public void TestNotification()
         {
-            ColorConsole.WriteHeader("🔔 Testing Notifications\n");
+            ColorConsole.WriteHeader("🔔 Testing Notifications");
             Console.WriteLine();
 
             if (_config.EnableWindowsToast)
             {
-                ColorConsole.WriteInfo("Testing Windows Toast...\n");
-                ShowWindowsNotification("WiFi Manager Test", "Windows notification is working! 🎉\n", _appIconPath);
+                ColorConsole.WriteInfo("Testing Windows Toast...");
+                ShowWindowsNotification("WiFi Manager Test", "Windows notification is working! 🎉", _appIconPath);
                 System.Threading.Thread.Sleep(1000);
             }
 
             if (_config.EnableGrowl && _growlConnections.Count > 0)
             {
-                ColorConsole.WriteInfo($"Testing Growl ({_growlConnections.Count} host(s))...\n");
+                ColorConsole.WriteInfo($"Testing Growl ({_growlConnections.Count} host(s))...");
+                Console.WriteLine();
                 
                 foreach (var connection in _growlConnections.Where(c => c.IsAvailable))
                 {
-                    SendGrowlNotification(connection, "WiFi Manager Test", $"Growl notification from {connection.Host} is working! 🎉\n", _appIconPath).Wait();
+                    SendGrowlNotification(connection, "WiFi Manager Test", $"Growl notification from {connection.Host} is working! 🎉", _appIconPath).Wait();
                     
                     if (connection.IsAvailable)
                     {
-                        ColorConsole.WriteSuccess($"✅ Growl test sent to {connection.Host}\n");
+                        ColorConsole.WriteSuccess($"✅ Growl test sent to {connection.Host}");
+                        Console.WriteLine();
                     }
                     else
                     {
-                        ColorConsole.WriteError($"❌ Growl test failed for {connection.Host}\n");
+                        ColorConsole.WriteError($"❌ Growl test failed for {connection.Host}");
+                        Console.WriteLine();
                     }
                 }
             }
             else if (!_config.EnableGrowl)
             {
-                ColorConsole.WriteWarning("⚠️  Growl is disabled in config\n");
+                ColorConsole.WriteWarning("⚠️  Growl is disabled in config");
             }
             else
             {
@@ -390,7 +458,8 @@ try {{
             }
 
             Console.WriteLine();
-            ColorConsole.WriteSuccess("✅ Notification test completed\n");
+            ColorConsole.WriteSuccess("✅ Notification test completed");
+            Console.WriteLine();
 
             if (!string.IsNullOrEmpty(_appIconPath))
             {

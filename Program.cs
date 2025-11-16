@@ -10,7 +10,8 @@ namespace WiFiManager
         {
             Console.OutputEncoding = System.Text.Encoding.UTF8;
             
-            var manager = new WiFiManagerCLI();
+            // USE 'using' to ensure proper disposal
+		    using var manager = new WiFiManagerCLI();
             
             if (args.Length > 0)
             {

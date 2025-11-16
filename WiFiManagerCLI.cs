@@ -6,10 +6,11 @@ using System.Threading.Tasks;
 
 namespace WiFiManager
 {
-    public class WiFiManagerCLI
+    public class WiFiManagerCLI : IDisposable
     {
         private readonly WiFiService _wifiService;
         private readonly NotificationService _notificationService;
+        private bool _disposed = false;
         private Dictionary<string, int> _networkSignals = new(); // Track signal strength per network
         private HashSet<string> _seenNetworks = new(); // Track networks we've already announced
 
@@ -17,6 +18,15 @@ namespace WiFiManager
         {
             _wifiService = new WiFiService();
             _notificationService = new NotificationService();
+        }
+
+        public void Dispose()
+        {
+            if (!_disposed)
+            {
+                _wifiService?.Dispose();
+                _disposed = true;
+            }
         }
 
         public void TestNotification()
@@ -82,6 +92,7 @@ namespace WiFiManager
             {
                 var iface = interfaces[index];
                 ColorConsole.WriteSuccess($"✅ Switched to interface: {iface.Description}");
+                Console.WriteLine();
             }
             else
             {
@@ -201,16 +212,19 @@ namespace WiFiManager
                         return;
                     }
                     ColorConsole.WriteSuccess("✅ Profile created");
+                    Console.WriteLine();
                 }
             }
 
             if (_wifiService.Connect(ssid))
             {
                 ColorConsole.WriteSuccess($"✅ Connected to '{ssid}'");
+                Console.WriteLine();
             }
             else
             {
                 ColorConsole.WriteError($"❌ Failed to connect to '{ssid}'");
+                Console.WriteLine();
             }
 
             await Task.CompletedTask;
@@ -223,10 +237,12 @@ namespace WiFiManager
             if (_wifiService.Disconnect())
             {
                 ColorConsole.WriteSuccess("✅ Disconnected");
+                Console.WriteLine();
             }
             else
             {
                 ColorConsole.WriteError("❌ Failed to disconnect");
+                Console.WriteLine();
             }
         }
 
@@ -303,7 +319,8 @@ namespace WiFiManager
             if (activeInterface != null)
             {
                 var statusIcon = activeInterface.IsConnected ? "🟢" : "⚪";
-                ColorConsole.WriteInfo($"Monitoring: {statusIcon} {activeInterface.Description}\n");
+                ColorConsole.WriteInfo($"Monitoring: {statusIcon} {activeInterface.Description}");
+                Console.WriteLine();
                 
                 // If not connected, suggest switching to connected interface
                 if (!activeInterface.IsConnected)
@@ -312,7 +329,7 @@ namespace WiFiManager
                     var connectedInterface = interfaces.FirstOrDefault(i => i.IsConnected);
                     if (connectedInterface != null)
                     {
-                        ColorConsole.WriteWarning($"⚠️  Active interface is disconnected");
+                        ColorConsole.WriteWarning("⚠️  Active interface is disconnected");
                         ColorConsole.WriteInfo($"💡 Use 'wifimgr interface {interfaces.IndexOf(connectedInterface)}' to switch to {connectedInterface.Description}");
                         Console.WriteLine();
                     }
@@ -326,17 +343,19 @@ namespace WiFiManager
             var lastStatus = _wifiService.GetConnectionStatus();
             if (lastStatus != null)
             {
-                ColorConsole.WriteSuccess($"✅ Currently connected to '{lastStatus.SSID}' ({lastStatus.SignalQuality}%)\n");
+                ColorConsole.WriteSuccess($"✅ Currently connected to '{lastStatus.SSID}' ({lastStatus.SignalQuality}%)");
                 Console.WriteLine();
             }
             else
             {
-                ColorConsole.WriteWarning("⚠️  Not connected to any WiFi network\n");
+                ColorConsole.WriteWarning("⚠️  Not connected to any WiFi network");
                 Console.WriteLine();
             }
             
             // Initialize network signals tracking - scan in background
-            ColorConsole.WriteInfo("🔍 Scanning for networks...\n\n");
+            ColorConsole.WriteInfo("🔍 Scanning for networks...");
+            Console.WriteLine();
+            
             var initialNetworks = _wifiService.ScanNetworks();
             
             if (initialNetworks.Count == 0)
@@ -346,7 +365,9 @@ namespace WiFiManager
             }
             else
             {
-                ColorConsole.WriteSuccess($"Found {initialNetworks.Count} network(s):\n");
+                ColorConsole.WriteSuccess($"Found {initialNetworks.Count} network(s):");
+                Console.WriteLine();
+                
                 foreach (var network in initialNetworks.OrderByDescending(n => n.SignalQuality))
                 {
                     var signalIcon = GetSignalIcon(network.SignalQuality);
@@ -359,121 +380,148 @@ namespace WiFiManager
                 Console.WriteLine();
             }
 
-            Console.CancelKeyPress += (s, e) =>
+            // Create CancellationTokenSource for graceful shutdown
+            var cts = new CancellationTokenSource();
+            
+            // Handle Ctrl+C
+            Console.CancelKeyPress += (sender, e) =>
             {
-                e.Cancel = true;
-                Console.WriteLine();
-                ColorConsole.WriteWarning("⛔ Stopping monitor...\n");
-                Environment.Exit(0);
+                e.Cancel = true; // Prevent immediate termination
+                cts.Cancel();    // Signal cancellation
             };
 
             int scanCount = 0;
-            while (true)
+            
+            try
             {
-                try
+                while (!cts.Token.IsCancellationRequested)
                 {
-                    scanCount++;
-                    
-                    var currentStatus = _wifiService.GetConnectionStatus();
-                    
-                    // Check connection status change
-                    if (lastStatus == null && currentStatus != null)
+                    try
                     {
-                        var msg = $"✅ Connected to '{currentStatus.SSID}' ({currentStatus.SignalQuality}%)\n";
-                        ColorConsole.WriteSuccess(msg);
-                        Console.WriteLine();
-                        _notificationService.ShowNotification("WiFi Connected", $"Connected to {currentStatus.SSID}\n");
-                    }
-                    else if (lastStatus != null && currentStatus == null)
-                    {
-                        var msg = $"⛔ Disconnected from '{lastStatus.SSID}'\n";
-                        ColorConsole.WriteWarning(msg);
-                        Console.WriteLine();
-                        _notificationService.ShowNotification("WiFi Disconnected", $"Disconnected from {lastStatus.SSID}\n");
-                    }
-                    else if (lastStatus != null && currentStatus != null && lastStatus.SSID != currentStatus.SSID)
-                    {
-                        var msg = $"🔄 Switched from '{lastStatus.SSID}' to '{currentStatus.SSID}'\n";
-                        ColorConsole.WriteInfo(msg);
-                        Console.WriteLine();
-                        _notificationService.ShowNotification("WiFi Changed", $"Switched to {currentStatus.SSID}\n");
-                    }
-                    else if (lastStatus != null && currentStatus != null && lastStatus.SSID == currentStatus.SSID)
-                    {
-                        // Check for significant signal change (±5% or more)
-                        var signalDiff = Math.Abs(currentStatus.SignalQuality - lastStatus.SignalQuality);
-                        if (signalDiff >= 5)
-                        {
-                            var trend = currentStatus.SignalQuality > lastStatus.SignalQuality ? "📈" : "📉";
-                            var msg = $"{trend} Signal: {lastStatus.SignalQuality}% → {currentStatus.SignalQuality}% ({currentStatus.SSID})";
-                            
-                            if (currentStatus.SignalQuality > lastStatus.SignalQuality)
-                                ColorConsole.WriteSuccess(msg);
-                            else
-                                ColorConsole.WriteWarning(msg);
-                            
-                            Console.WriteLine();
-                            
-                            // Send notification for significant changes (≥10%)
-                            if (signalDiff >= 10)
-                            {
-                                var trendText = currentStatus.SignalQuality > lastStatus.SignalQuality ? "improved" : "degraded";
-                                _notificationService.ShowNotification(
-                                    "Signal Changed", 
-                                    $"{currentStatus.SSID}: {lastStatus.SignalQuality}% → {currentStatus.SignalQuality}% ({trendText})"
-                                );
-                            }
-                        }
-                    }
-
-                    lastStatus = currentStatus;
-
-                    // Scan for networks every 3rd iteration (every 15 seconds)
-                    if (scanCount % 3 == 0)
-                    {
-                        var currentNetworks = _wifiService.ScanNetworks();
+                        scanCount++;
                         
-                        foreach (var network in currentNetworks)
+                        var currentStatus = _wifiService.GetConnectionStatus();
+                        
+                        // Check connection status change
+                        if (lastStatus == null && currentStatus != null)
                         {
-                            if (!_seenNetworks.Contains(network.SSID))
+                            // Connected
+                            ColorConsole.WriteSuccess($"✅ Connected to '{currentStatus.SSID}' ({currentStatus.SignalQuality}%)");
+                            Console.WriteLine();
+                            _notificationService.ShowNotification("WiFi Connected", $"Connected to {currentStatus.SSID}");
+                        }
+                        else if (lastStatus != null && currentStatus == null)
+                        {
+                            // Disconnected
+                            ColorConsole.WriteWarning($"⛔ Disconnected from '{lastStatus.SSID}'");
+                            Console.WriteLine();
+                            _notificationService.ShowNotification("WiFi Disconnected", $"Disconnected from {lastStatus.SSID}");
+                        }
+                        else if (lastStatus != null && currentStatus != null && lastStatus.SSID != currentStatus.SSID)
+                        {
+                            // Network changed
+                            ColorConsole.WriteInfo($"🔄 Switched from '{lastStatus.SSID}' to '{currentStatus.SSID}'");
+                            Console.WriteLine();
+                            _notificationService.ShowNotification("WiFi Changed", $"Switched to {currentStatus.SSID}");
+                        }
+                        else if (lastStatus != null && currentStatus != null && lastStatus.SSID == currentStatus.SSID)
+                        {
+                            // Check for significant signal change (±5% or more)
+                            var signalDiff = Math.Abs(currentStatus.SignalQuality - lastStatus.SignalQuality);
+                            if (signalDiff >= 5)
                             {
-                                // New network detected (first time ever seen)
-                                _seenNetworks.Add(network.SSID);
-                                _networkSignals[network.SSID] = network.SignalQuality;
+                                var trend = currentStatus.SignalQuality > lastStatus.SignalQuality ? "📈" : "📉";
+                                var msg = $"{trend} Signal: {lastStatus.SignalQuality}% → {currentStatus.SignalQuality}% ({currentStatus.SSID})";
                                 
-                                var msg = $"🆕 New network: '{network.SSID}' ({network.SignalQuality}%)";
-                                ColorConsole.WriteColored(msg, ConsoleColor.Cyan);
+                                if (currentStatus.SignalQuality > lastStatus.SignalQuality)
+                                    ColorConsole.WriteSuccess(msg);
+                                else
+                                    ColorConsole.WriteWarning(msg);
+                                
                                 Console.WriteLine();
-                                _notificationService.ShowNotification("New WiFi Network", $"{network.SSID} ({network.SignalQuality}%)");
-                            }
-                            else if (_networkSignals.ContainsKey(network.SSID))
-                            {
-                                // Check for signal change in known networks
-                                var oldSignal = _networkSignals[network.SSID];
-                                var signalDiff = Math.Abs(network.SignalQuality - oldSignal);
                                 
-                                // Only show for background networks if change is ≥15%
-                                if (signalDiff >= 15 && (currentStatus == null || currentStatus.SSID != network.SSID))
+                                // Send notification for significant changes (≥10%)
+                                if (signalDiff >= 10)
                                 {
-                                    var trend = network.SignalQuality > oldSignal ? "📈" : "📉";
-                                    var msg = $"{trend} '{network.SSID}': {oldSignal}% → {network.SignalQuality}%";
-                                    ColorConsole.WriteColored(msg, ConsoleColor.DarkGray);
-                                    Console.WriteLine();
+                                    var trendText = currentStatus.SignalQuality > lastStatus.SignalQuality ? "improved" : "degraded";
+                                    _notificationService.ShowNotification(
+                                        "Signal Changed", 
+                                        $"{currentStatus.SSID}: {lastStatus.SignalQuality}% → {currentStatus.SignalQuality}% ({trendText})"
+                                    );
                                 }
-                                
-                                _networkSignals[network.SSID] = network.SignalQuality;
                             }
                         }
-                    }
 
-                    await Task.Delay(5000); // Check connection status every 5 seconds
+                        lastStatus = currentStatus;
+
+                        // Scan for networks every 3rd iteration (every 15 seconds)
+                        if (scanCount % 3 == 0)
+                        {
+                            var currentNetworks = _wifiService.ScanNetworks();
+                            
+                            foreach (var network in currentNetworks)
+                            {
+                                if (!_seenNetworks.Contains(network.SSID))
+                                {
+                                    // New network detected (first time ever seen)
+                                    _seenNetworks.Add(network.SSID);
+                                    _networkSignals[network.SSID] = network.SignalQuality;
+                                    
+                                    ColorConsole.WriteColored($"🆕 New network: '{network.SSID}' ({network.SignalQuality}%)", ConsoleColor.Cyan);
+                                    Console.WriteLine();
+                                    _notificationService.ShowNotification("New WiFi Network", $"{network.SSID} ({network.SignalQuality}%)");
+                                }
+                                else if (_networkSignals.ContainsKey(network.SSID))
+                                {
+                                    // Check for signal change in known networks
+                                    var oldSignal = _networkSignals[network.SSID];
+                                    var signalDiff = Math.Abs(network.SignalQuality - oldSignal);
+                                    
+                                    // Only show for background networks if change is ≥15%
+                                    if (signalDiff >= 15 && (currentStatus == null || currentStatus.SSID != network.SSID))
+                                    {
+                                        var trend = network.SignalQuality > oldSignal ? "📈" : "📉";
+                                        ColorConsole.WriteColored($"{trend} '{network.SSID}': {oldSignal}% → {network.SignalQuality}%", ConsoleColor.DarkGray);
+                                        Console.WriteLine();
+                                    }
+                                    
+                                    _networkSignals[network.SSID] = network.SignalQuality;
+                                }
+                            }
+                        }
+
+                        // Wait 5 seconds or until cancellation
+                        await Task.Delay(5000, cts.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // Normal cancellation, exit loop
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        ColorConsole.WriteError($"❌ Monitor error: {ex.Message}");
+                        Console.WriteLine();
+                        
+                        // Wait before retrying
+                        try
+                        {
+                            await Task.Delay(5000, cts.Token);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            break;
+                        }
+                    }
                 }
-                catch (Exception ex)
-                {
-                    ColorConsole.WriteError($"❌ Monitor error: {ex.Message}");
-                    Console.WriteLine();
-                    await Task.Delay(5000);
-                }
+            }
+            finally
+            {
+                // Cleanup
+                Console.WriteLine();
+                ColorConsole.WriteWarning("⛔ Monitoring stopped");
+                Console.WriteLine();
+                cts.Dispose();
             }
         }
 
