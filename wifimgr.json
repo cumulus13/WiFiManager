@@ -1,0 +1,27 @@
+{
+  "enableWindowsToast": true,
+  "enableGrowl": true,
+  "growlHosts": [
+    {
+      "host": "127.0.0.1",
+      "port": 23053,
+      "enabled": true,
+      "name": "Local Growl"
+    },
+    {
+      "host": "222.222.222.101",
+      "port": 23053,
+      "enabled": true,
+      "name": "WP32"
+    }
+  ],
+  "iconPath": "C:\\PROJECTS\\dotnet\\WiFiManager\\wifi.png",
+  "connectionTimeout": 1000,
+  "notificationPriorities": {
+    "WiFi Connected": 0,
+    "WiFi Disconnected": 2,
+    "WiFi Changed": 0,
+    "New WiFi Network": 0,
+    "Signal Changed": -1
+  }
+}
